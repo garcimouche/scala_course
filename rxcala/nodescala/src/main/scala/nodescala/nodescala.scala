@@ -1,21 +1,21 @@
 package nodescala
 
-import com.sun.net.httpserver._
-import scala.concurrent._
-import scala.concurrent.duration._
-import ExecutionContext.Implicits.global
-import scala.async.Async.{async, await}
-import scala.collection._
-import scala.collection.JavaConversions._
-import java.util.concurrent.{Executor, ThreadPoolExecutor, TimeUnit, LinkedBlockingQueue}
-import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import java.net.InetSocketAddress
+import java.util.concurrent.{LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
+
+import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
+
+import scala.async.Async.{async, await}
+import scala.collection.JavaConversions._
+import scala.collection._
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent._
 
 /** Contains utilities common to the NodeScala© framework.
   */
 trait NodeScala {
 
-  import NodeScala._
+  import nodescala.NodeScala._
 
   def port: Int
 
@@ -28,14 +28,18 @@ trait NodeScala {
     *
     * @param exchange     the exchange used to write the response back
     * @param token        the cancellation token
-    * @param body         the response to write back
+    * @param response         the response to write back
     */
   private def respond(exchange: Exchange, token: CancellationToken, response: Response): Unit = {
-    while (!response.isEmpty && token.nonCancelled) {
-      exchange.write(response.next())
-      response.drop(0)
+    Future{
+      blocking{
+        while (!response.isEmpty && token.nonCancelled) {
+          exchange.write(response.next())
+          response.drop(0)
+        }
+        exchange.close()
+      }
     }
-    exchange.close()
   }
 
 
