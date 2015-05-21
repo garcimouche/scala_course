@@ -49,14 +49,18 @@ class Replicator(val replica: ActorRef) extends Actor {
   def receive: Receive = {
 
     case Replicate(key, value, id) =>
+      println(s"Replicate key $key id $id")
       val seq = nextSeq
       acks = acks + ((seq, (replica, Replicate(key, value, id))))
       replica ! Snapshot(key, value, seq)
 
     case SnapshotAck(key, seq) =>
+      println(s"SnapshotAck key $key seq $seq")
       acks = acks - seq //remove acknowledged
+      context.parent ! Replicated(key,seq)//acknowledge primary
 
     case ResendSnapshot =>
+      println(s"ResendSnapshot")
       acks.foreach {
         case (seq, (rep, req)) => rep ! Snapshot(req.key, req.valueOption, seq)
       }
@@ -64,7 +68,7 @@ class Replicator(val replica: ActorRef) extends Actor {
   }
 
   //scheduler will resend Snapshot every 100 ms to achieve atLeastOnce Delivery to Replica
-  context.system.scheduler.schedule(0 milliseconds, 100 milliseconds, self, ResendSnapshot);
+  context.system.scheduler.schedule(100 milliseconds, 100 milliseconds, self, ResendSnapshot);
 
 
 }

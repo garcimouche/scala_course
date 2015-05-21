@@ -88,6 +88,7 @@ class Step5_PrimaryPersistenceSpec extends TestKit(ActorSystem("Step5PrimaryPers
         val secondary = TestProbe()
     val client = session(primary)
 
+    println("sec replica is " + secondary.ref)
     arbiter.expectMsg(Join)
     arbiter.send(primary, JoinedPrimary)
     arbiter.send(primary, Replicas(Set(primary, secondary.ref)))
