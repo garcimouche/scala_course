@@ -41,7 +41,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   case object ResendPersist
 
   //msg use to manage global acknowledgement
-  case object ManageGlobalAck
+  case class FailGlobalAck(id:Long)
 
   type Retry = Int
 
@@ -109,40 +109,18 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     common.orElse {
 
       case Insert(key, value, id) =>
-        println(s"Insert $key,$value")
-        globalAcks += ((id, Set(self)))
-        ackRequesters = ackRequesters.updated(id,sender)
         kv = kv + ((key, value))
-        val persist = Persist(key, Some(value), id)
-        notPersistedSeq += ((id, (0, persist)))
-        persistence ! persist
-        secondaries.values.foreach {
-          replicator =>
-            replicator ! Replicate(key, Some(value), id)
-            globalAcks = globalAcks.updated(id,globalAcks.get(id).get + replicator)
-        }
-        println(s"Insert globalAcks is now $globalAcks")
+        update(Insert(key,value,id),Some(value))
 
       case Remove(key, id) =>
-        println(s"Remove $key id $id")
-        globalAcks += ((id, Set(self)))
-        ackRequesters = ackRequesters.updated(id,sender)
         kv = kv - key
-        val persist = Persist(key, None, id)
-        notPersistedSeq += ((id, (0,persist)))
-        persistence ! persist
-        secondaries.values.foreach {
-          replicator =>
-            replicator ! Replicate(key, None, id)
-            globalAcks = globalAcks.updated(id,globalAcks.get(id).get + replicator)
-        }
-        println(s"Remove globalAcks is now $globalAcks")
+        update(Remove(key,id),None)
 
       case Persisted(key, id) =>
         println(s"Persisted key $key id $id")
         notPersistedSeq -= id
         globalAcks = globalAcks.updated(id,globalAcks.get(id).get - self)
-        if(globalAcks.get(id).get.isEmpty){
+        if(!alreadyAcknoweledged(id) && globalAcks.get(id).get.isEmpty){
           println(s"from Persisted key $key OperationAck $id")
           ackRequesters(id) ! OperationAck(id)
           alreadyAcknoweledged+=id
@@ -160,7 +138,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
             replica =>
               val replicator = context.actorOf(Replicator.props(replica))//create Replicator
               kv.foreach{ case (k,v) =>
-                replicator ! Replicate(k,Some(v),k.hashCode)//replicate kv store
+                replicator ! Replicate(k,Some(v),-1)//replicate kv store
               }
               secondaries +=((replica,replicator))//register new Replicator
           }
@@ -186,27 +164,28 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       case Replicated(key,id) =>
         println(s"Replicated key:$key id:$id globalAck is $globalAcks, sender is $sender")
         if(!alreadyAcknoweledged(id)){
-          val remainingReplicators = globalAcks.get(id).get
-          globalAcks = globalAcks.updated(id,remainingReplicators - sender)
-          if(globalAcks.get(id).get.isEmpty){
-            println(s"from Replicated key $key OperationAck $id")
-            ackRequesters(id) ! OperationAck(id)
-            alreadyAcknoweledged+=id
+          val remainingReplicators = globalAcks.get(id)
+          if(remainingReplicators.isDefined){
+            globalAcks = globalAcks.updated(id,remainingReplicators.get - sender)
+            if(globalAcks.get(id).get.isEmpty){
+              println(s"from Replicated key $key OperationAck $id")
+              ackRequesters(id) ! OperationAck(id)
+              alreadyAcknoweledged+=id
+            }
           }
+          else println(s"Replicated recvd but cannot find replicator in globalAck for id $id!!")
         }
         else println(s"operation id $id already acknowledged")
 
-      case ManageGlobalAck =>
-        println("in ManageGlobalAck primary, globalAcks " + globalAcks);
-        globalAcks
-          .filterNot{case (k,v) => v.isEmpty}//remove acknowledged
-          .foreach{
-            case (id,v) =>
-              ackRequesters(id) ! OperationFailed(id)
-              alreadyAcknoweledged+=id
-          }
-        globalAcks = Map.empty[Long,Set[ActorRef]]
+      case FailGlobalAck(id) =>
+        println("in FailGlobalAck primary, globalAcks " + globalAcks);
+        if(!globalAcks(id).isEmpty){
+          ackRequesters(id)!OperationFailed(id)
 
+          alreadyAcknoweledged+=id
+        }
+        //clean up already processed
+        globalAcks -= id
     }
   }
 
@@ -231,17 +210,32 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         notPersistedSeq -= id
         replicator ! SnapshotAck(key, id)
 
-      case ManageGlobalAck => //nothing special destination is primary
-        println("in replica, globalAcks should be empty" + globalAcks);
+      case FailGlobalAck => //nothing special destination is primary
+        println("in FailGlobalAck replica, globalAcks should be empty" + globalAcks);
     }
 
   }
 
+
+  private def update(op:Operation, value:Option[String]):Unit={
+    val key=op.key
+    println(s"$op $key,$value")
+    globalAcks += ((op.id, Set(self)))
+    ackRequesters = ackRequesters.updated(op.id,sender)
+    val persist = Persist(key, value, op.id)
+    notPersistedSeq += ((op.id, (0, persist)))
+    persistence ! persist
+    secondaries.values.foreach {
+      replicator =>
+        replicator ! Replicate(key, value, op.id)
+        globalAcks = globalAcks.updated(op.id,globalAcks.get(op.id).get + replicator)
+    }
+    //scheduler will make sure the global acknowledgment has been sent after 1 second
+    context.system.scheduler.scheduleOnce(1 second, self, FailGlobalAck(op.id));
+    println(s"$op globalAcks is now $globalAcks")
+ }
+
   //scheduler will resend Persist every 100 ms to achieve atLeastOnce Delivery to Persistence
   context.system.scheduler.schedule(100 milliseconds, 100 milliseconds, self, ResendPersist);
-
-  //scheduler will make sure the global acknowledgment has been sent after 1 second
-  context.system.scheduler.schedule(1 second, 1 second, self, ManageGlobalAck);
-
 }
 
