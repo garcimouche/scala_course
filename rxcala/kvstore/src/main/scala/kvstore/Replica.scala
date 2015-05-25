@@ -38,12 +38,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import scala.language.postfixOps
 
   //msg use to retry persist
-  case object ResendPersist
+  case class ResendPersist(msg:Persist)
 
   //msg use to manage global acknowledgement
   case class FailGlobalAck(id:Long)
-
-  type Retry = Int
 
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
@@ -61,7 +59,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   var persistence = context.actorOf(persistenceProps)
 
-  var notPersistedSeq = Map.empty[Long, (Retry,Persist)]
+  var persisted = Set.empty[Long]
 
   //a map of ops id to a Set of Actor acknowledging persistence
   var globalAcks = Map.empty[Long,Set[ActorRef]]
@@ -73,8 +71,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   var replicator:ActorRef = _
 
-  arbiter ! Join
   //join @ creation
+  arbiter ! Join
 
   override val supervisorStrategy = OneForOneStrategy() {
     case _: PersistenceException => SupervisorStrategy.resume
@@ -89,19 +87,12 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Get(key, id) =>
       sender ! GetResult(key, kv.get(key), id)
 
-    case ResendPersist =>
-      notPersistedSeq.foreach{
-        case (k,v) =>
-          val (retry,persist) = v
-          if(retry < 10)
-            persistence ! Persist(persist.key,persist.valueOption,persist.id)
-          else
-            notPersistedSeq -= persist.id//retry persist for 1 sec max => 10 * 100 ms
+    case ResendPersist(persist) =>
+      if(!persisted(persist.id)){
+        persistence ! persist
+        context.system.scheduler.scheduleOnce(100 milliseconds, self, ResendPersist(persist));
+      }
 
-      }
-      notPersistedSeq = notPersistedSeq.mapValues{
-        case(retry,persist) => (retry+1,persist)
-      }
   }
 
   val leader: Receive = {
@@ -118,7 +109,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
       case Persisted(key, id) =>
         println(s"Persisted key $key id $id")
-        notPersistedSeq -= id
+        persisted = persisted + id
         globalAcks = globalAcks.updated(id,globalAcks.get(id).get - self)
         if(!alreadyAcknoweledged(id) && globalAcks.get(id).get.isEmpty){
           println(s"from Persisted key $key OperationAck $id")
@@ -181,7 +172,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         println("in FailGlobalAck primary, globalAcks " + globalAcks);
         if(!globalAcks(id).isEmpty){
           ackRequesters(id)!OperationFailed(id)
-
           alreadyAcknoweledged+=id
         }
         //clean up already processed
@@ -199,19 +189,17 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         if (expectedSeq == seq) {
           kv = value.fold(kv - key)(v => kv + ((key, v)))
           expectedSeq = seq + 1
-          notPersistedSeq += ( (seq, (0,Persist(key, value, seq)) ) )
-          persistence ! Persist(key, value, seq)
+          val persist = Persist(key, value, seq)
+          persistence ! persist
+          context.system.scheduler.scheduleOnce(100 milliseconds, self, ResendPersist(persist));
         }
         else if (expectedSeq > seq)
           replicator ! SnapshotAck(key, seq)
 
       case Persisted(key, id) =>
         println(s"sec.Persisted key $key id $id")
-        notPersistedSeq -= id
+        persisted = persisted + id
         replicator ! SnapshotAck(key, id)
-
-      case FailGlobalAck => //nothing special destination is primary
-        println("in FailGlobalAck replica, globalAcks should be empty" + globalAcks);
     }
 
   }
@@ -222,20 +210,19 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     println(s"$op $key,$value")
     globalAcks += ((op.id, Set(self)))
     ackRequesters = ackRequesters.updated(op.id,sender)
-    val persist = Persist(key, value, op.id)
-    notPersistedSeq += ((op.id, (0, persist)))
-    persistence ! persist
     secondaries.values.foreach {
       replicator =>
         replicator ! Replicate(key, value, op.id)
         globalAcks = globalAcks.updated(op.id,globalAcks.get(op.id).get + replicator)
     }
+    //persist
+    val persist = Persist(key, value, op.id)
+    persistence ! persist
+    //schedule an eventual resend of persistence message
+    context.system.scheduler.scheduleOnce(100 milliseconds, self, ResendPersist(persist));
     //scheduler will make sure the global acknowledgment has been sent after 1 second
     context.system.scheduler.scheduleOnce(1 second, self, FailGlobalAck(op.id));
     println(s"$op globalAcks is now $globalAcks")
  }
-
-  //scheduler will resend Persist every 100 ms to achieve atLeastOnce Delivery to Persistence
-  context.system.scheduler.schedule(100 milliseconds, 100 milliseconds, self, ResendPersist);
 }
 
