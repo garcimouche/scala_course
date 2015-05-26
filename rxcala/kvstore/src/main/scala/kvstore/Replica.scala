@@ -129,7 +129,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
             replica =>
               val replicator = context.actorOf(Replicator.props(replica))//create Replicator
               kv.foreach{ case (k,v) =>
-                replicator ! Replicate(k,Some(v),-1)//replicate kv store
+                replicator ! Replicate(k,Some(v), Integer.MIN_VALUE)//replicate kv store
               }
               secondaries +=((replica,replicator))//register new Replicator
           }

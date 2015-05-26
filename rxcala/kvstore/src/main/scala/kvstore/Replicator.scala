@@ -56,8 +56,9 @@ class Replicator(val replica: ActorRef) extends Actor {
 
     case SnapshotAck(key, seq) =>
       println(s"SnapshotAck key $key seq $seq")
+      context.parent ! Replicated(key,acks(seq)._2.id)//acknowledge primary
       acks = acks - seq //remove acknowledged
-      context.parent ! Replicated(key,seq)//acknowledge primary
+
 
     case ResendSnapshot =>
       println(s"ResendSnapshot")

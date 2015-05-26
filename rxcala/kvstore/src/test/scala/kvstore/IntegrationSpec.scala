@@ -3,7 +3,7 @@
  */
 package kvstore
 
-import akka.actor.ActorSystem
+import akka.actor.{Props, ActorSystem}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import kvstore.Replicator.{Snapshot, SnapshotAck}
 import org.scalactic.ConversionCheckedTripleEquals
@@ -31,7 +31,7 @@ class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
    * using an Arbiter variant that introduces randomly message-dropping forwarder Actors).
    */
 
-  test("case1: Make sure Global Acknowledgment overlapped overt time") {
+  test("case1: Make sure Global Acknowledgment overlapped over time") {
     val arbiter = TestProbe()
     val persistence = TestProbe()
     val primary = system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "case1-primary")
@@ -60,5 +60,13 @@ class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
   }
 
 
-
+  test("case2: Several replicas Flaky Peristence") {
+      val arbiter = system.actorOf(Props[Arbiter], "case2-arbiter")
+      val primary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case2-primary")
+      // wait for primary to register
+      val secondary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case2-secondary")
+      // wait for secondary to register
+      val client = TestProbe()
   }
+
+}
