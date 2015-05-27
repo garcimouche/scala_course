@@ -3,7 +3,7 @@
  */
 package kvstore
 
-import akka.actor.{Props, ActorSystem}
+import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import kvstore.Replicator.{Snapshot, SnapshotAck}
 import org.scalactic.ConversionCheckedTripleEquals
@@ -12,12 +12,12 @@ import org.scalatest.{BeforeAndAfterAll, FunSuiteLike, Matchers}
 import scala.concurrent.duration._
 
 class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
-    with FunSuiteLike
-        with Matchers
-    with BeforeAndAfterAll
-    with ConversionCheckedTripleEquals
-    with ImplicitSender
-    with Tools {
+with FunSuiteLike
+with Matchers
+with BeforeAndAfterAll
+with ConversionCheckedTripleEquals
+with ImplicitSender
+with Tools {
 
   import kvstore.Arbiter._
 
@@ -60,13 +60,28 @@ class IntegrationSpec(_system: ActorSystem) extends TestKit(_system)
   }
 
 
-  test("case2: Several replicas Flaky Peristence") {
-      val arbiter = system.actorOf(Props[Arbiter], "case2-arbiter")
-      val primary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case2-primary")
-      // wait for primary to register
-      val secondary = system.actorOf(Replica.props(arbiter, Persistence.props(flaky = false)), "case2-secondary")
-      // wait for secondary to register
-      val client = TestProbe()
+  test("case2: seq and id are not the same") {
+    val arbiter = TestProbe()
+    val primary = system.actorOf(Replica.props(arbiter.ref, Persistence.props(flaky = false)), "case2-primary")
+    val secondaryA = TestProbe()
+    // wait for secondary to register
+    val client = session(primary)
+    arbiter.expectMsg(Join)
+    arbiter.send(primary, JoinedPrimary)
+    val setId = client.set("foo", "bar")
+    client.waitAck(setId)
+    val setId2 = client.set("foo2", "bar2")
+    client.waitAck(setId2)
+    val rmId = client.remove("foo")
+    client.waitAck(rmId)
+    arbiter.send(primary, Replicas(Set(primary, secondaryA.ref)))
+    var seqA = secondaryA.expectMsgType[Snapshot].seq
+    println(s"seq is $seqA")
+    val setId3 = client.set("foo3", "bar")
+    seqA = secondaryA.expectMsgType[Snapshot].seq
+    println(s"seq is $seqA")
+    secondaryA.reply(SnapshotAck("foo3", seqA))
+    client.waitAck(setId3)
   }
 
 }
