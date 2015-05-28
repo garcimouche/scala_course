@@ -50,12 +50,10 @@ class Replicator(val replica: ActorRef) extends Actor {
 
     case Replicate(key, value, id) =>
       val seq = nextSeq
-      println(s"Replicate key $key id $id next seq is $seq")
       acks = acks + ((seq, (replica, Replicate(key, value, id))))
       replica ! Snapshot(key, value, seq)
 
     case SnapshotAck(key, seq) =>
-      println(s"SnapshotAck key $key seq $seq")
       if(acks.get(seq).isDefined){
         context.parent ! Replicated(key,acks(seq)._2.id)//acknowledge primary
         acks = acks - seq //remove acknowledged
@@ -63,7 +61,6 @@ class Replicator(val replica: ActorRef) extends Actor {
 
 
     case ResendSnapshot =>
-      println(s"ResendSnapshot")
       acks.foreach {
         case (seq, (rep, req)) => rep ! Snapshot(req.key, req.valueOption, seq)
       }

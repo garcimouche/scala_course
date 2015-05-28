@@ -108,15 +108,12 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         update(Remove(key,id),None)
 
       case Persisted(key, id) =>
-        println(s"Persisted key $key id $id")
         persisted = persisted + id
         globalAcks = globalAcks.updated(id,globalAcks.get(id).get - self)
         if(!alreadyAcknoweledged(id) && globalAcks.get(id).get.isEmpty){
-          println(s"from Persisted key $key OperationAck $id")
           ackRequesters(id) ! OperationAck(id)
           alreadyAcknoweledged+=id
         }
-        else println("Persisted cannot acknowledged operation remaining:"+globalAcks.get(id).get)
 
 
 
@@ -134,10 +131,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
               secondaries +=((replica,replicator))//register new Replicator
           }
 
-        println(s"Replicas secondaries is now $secondaries")
         //remove replicator having replica not present anymore
         val obsoleteReplicas = secondaries.filter{case (k,_) => !reps(k)}
-        println(s"obsolete replicas $obsoleteReplicas")
         obsoleteReplicas.foreach(_._2 ! PoisonPill)//stop associated replicators
         //update outstanding acks
         globalAcks = globalAcks.mapValues(_ -- obsoleteReplicas.values)
@@ -149,27 +144,21 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
         //update secondaries refs removing obsolete replica
         secondaries = secondaries -- obsoleteReplicas.keys
-        println(s"secondaries after removing obsolete replicas $secondaries")
 
 
       case Replicated(key,id) =>
-        println(s"Replicated key:$key id:$id globalAck is $globalAcks, sender is $sender")
         if(!alreadyAcknoweledged(id)){
           val remainingReplicators = globalAcks.get(id)
           if(remainingReplicators.isDefined){
             globalAcks = globalAcks.updated(id,remainingReplicators.get - sender)
             if(globalAcks.get(id).get.isEmpty){
-              println(s"from Replicated key $key OperationAck $id")
               ackRequesters(id) ! OperationAck(id)
               alreadyAcknoweledged+=id
             }
           }
-          else println(s"Replicated recvd but cannot find replicator in globalAck for id $id!!")
         }
-        else println(s"operation id $id already acknowledged")
 
       case FailGlobalAck(id) =>
-        println("in FailGlobalAck primary, globalAcks " + globalAcks);
         if(!globalAcks(id).isEmpty){
           ackRequesters(id)!OperationFailed(id)
           alreadyAcknoweledged+=id
@@ -185,7 +174,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
       case Snapshot(key, value, seq) =>
         replicator=sender;
-        println(s"Snapshot key:$key seq:$seq")
         if (expectedSeq == seq) {
           kv = value.fold(kv - key)(v => kv + ((key, v)))
           expectedSeq = seq + 1
@@ -197,7 +185,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           replicator ! SnapshotAck(key, seq)
 
       case Persisted(key, id) =>
-        println(s"sec.Persisted key $key id $id")
         persisted = persisted + id
         replicator ! SnapshotAck(key, id)
     }
@@ -207,7 +194,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   private def update(op:Operation, value:Option[String]):Unit={
     val key=op.key
-    println(s"$op $key,$value")
     globalAcks += ((op.id, Set(self)))
     ackRequesters = ackRequesters.updated(op.id,sender)
     secondaries.values.foreach {
@@ -222,7 +208,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     context.system.scheduler.scheduleOnce(100 milliseconds, self, ResendPersist(persist));
     //scheduler will make sure the global acknowledgment has been sent after 1 second
     context.system.scheduler.scheduleOnce(1 second, self, FailGlobalAck(op.id));
-    println(s"$op globalAcks is now $globalAcks")
  }
 }
 
