@@ -30,5 +30,11 @@ class LineOfSightSuite extends FunSuite {
     assert(output.toList == List(0f, 1f, 4f, 4f))
   }
 
+  test("lineOfSight extra test") {
+    val output = new Array[Float](11)
+    lineOfSight(Array[Float](0f, 20f, 50f, 40f,90f,150f,20f,350f,520f,720f,520f), output)
+    assert(output.toList == List(0f, 20f,25f,25f,25f,30f,30f,50f,65f,80f,80f))
+  }
+  
 }
 
